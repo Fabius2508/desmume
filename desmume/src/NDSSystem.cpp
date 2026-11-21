@@ -18,6 +18,7 @@
 
 
 #include <string.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <algorithm>
 #include <math.h>
@@ -1930,6 +1931,66 @@ FORCEINLINE void arm7log()
 #endif
 }
 
+// ---------------------------------------------------------------------------
+// ARM9 overclock (custom patch)
+//
+// Scales down the cycle cost charged for every ARM9 instruction, so the emulated
+// ARM9 gets more work done per unit of emulated time. The ARM7, timers, DMA, the
+// geometry engine and the video/audio hardware keep their normal timing.
+//
+//   100  = stock speed
+//   200  = ARM9 runs twice as fast, 400 = four times, ... (clamped to 2000)
+//
+// The value is read once at startup from, in order:
+//   1. environment variable DESMUME_ARM9_OVERCLOCK
+//   2. first line of a text file "arm9_overclock.txt" in the working directory
+// Missing or invalid values mean 100 (stock).
+// ---------------------------------------------------------------------------
+static bool gArm9OverclockLoaded = false;
+static s32 gArm9OverclockPercent = 100;
+static s32 gArm9OverclockCarry = 0; // fractional cycles carried between instructions
+
+static void LoadArm9Overclock()
+{
+	gArm9OverclockLoaded = true;
+
+	long pct = 100;
+	const char *env = getenv("DESMUME_ARM9_OVERCLOCK");
+	if (env && *env)
+	{
+		pct = atol(env);
+	}
+	else
+	{
+		FILE *f = fopen("arm9_overclock.txt", "r");
+		if (f)
+		{
+			char buf[32];
+			if (fgets(buf, sizeof(buf), f)) pct = atol(buf);
+			fclose(f);
+		}
+	}
+
+	if (pct <= 0) pct = 100;
+	if (pct > 2000) pct = 2000;
+
+	gArm9OverclockPercent = (s32)pct;
+	gArm9OverclockCarry = 0;
+	INFO("ARM9 overclock: %d%%\n", (int)gArm9OverclockPercent);
+}
+
+static FORCEINLINE s32 Arm9ScaleCycles(s32 cycles)
+{
+	if (gArm9OverclockPercent == 100) return cycles;
+
+	// Keep the remainder so that the long-run average is exact even when a single
+	// instruction costs less than one scaled cycle.
+	gArm9OverclockCarry += cycles * 100;
+	const s32 scaled = gArm9OverclockCarry / gArm9OverclockPercent;
+	gArm9OverclockCarry -= scaled * gArm9OverclockPercent;
+	return scaled;
+}
+
 //these have not been tuned very well yet.
 static const int kMaxWork = 4000;
 static const int kIrqWait = 4000;
@@ -1993,9 +2054,9 @@ static /*donotinline*/ std::pair<s32,s32> armInnerLoop(
 				arm9log();
 				debug();
 #ifdef HAVE_JIT
-				arm9 += armcpu_exec<ARMCPU_ARM9,jit>();
+				arm9 += Arm9ScaleCycles((s32)armcpu_exec<ARMCPU_ARM9,jit>());
 #else
-				arm9 += armcpu_exec<ARMCPU_ARM9>();
+				arm9 += Arm9ScaleCycles((s32)armcpu_exec<ARMCPU_ARM9>());
 #endif
 				#ifdef DEVELOPER
 					nds_debug_continuing[0] = false;
@@ -2107,6 +2168,8 @@ template<bool FORCE>
 void NDS_exec(s32 nb)
 {
 	GDBSTUB_MUTEX_LOCK();
+
+	if (!gArm9OverclockLoaded) LoadArm9Overclock();
 
 	LagFrameFlag=1;
 
