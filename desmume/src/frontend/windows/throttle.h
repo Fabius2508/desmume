@@ -25,6 +25,7 @@ void DecreaseSpeed();
 
 void InitSpeedThrottle();
 void SpeedThrottle();
+int GetFastForwardCapPercent(); // 0 = uncapped
 
 void AutoFrameSkip_NextFrame();
 void AutoFrameSkip_IgnorePreviousDelay();

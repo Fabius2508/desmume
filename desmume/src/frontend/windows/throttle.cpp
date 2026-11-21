@@ -109,20 +109,41 @@ static void AutoFrameSkip_BeforeThrottle();
 
 static u64 ltime;
 
+// Fast-forward speed cap, in percent of normal speed (custom patch).
+//   500 = about 5x (default), 0 = uncapped (stock DeSmuME behaviour).
+// Set with  [Video] Fast Forward Percent=<n>  in desmume.ini. Read once, on first use.
+int GetFastForwardCapPercent()
+{
+	static int cap = -1;
+	if(cap < 0)
+	{
+		cap = (int)GetPrivateProfileInt("Video", "Fast Forward Percent", 500, IniName);
+		if(cap < 0) cap = 0;
+		if(cap > 10000) cap = 10000;
+	}
+	return cap;
+}
+
 void SpeedThrottle()
 {
 	AutoFrameSkip_BeforeThrottle();
 
-waiter:
+	u64 targetfps = desiredfps;
 	if(FastForward)
-		return;
+	{
+		const int cap = GetFastForwardCapPercent();
+		if(cap == 0)
+			return; // uncapped
+		targetfps = desiredfps * (u64)cap / 100;
+	}
 
+waiter:
 	u64 ttime = GetCurTime();
 
-	if((ttime - ltime) < (tfreq / desiredfps))
+	if((ttime - ltime) < (tfreq / targetfps))
 	{
 		u64 sleepy;
-		sleepy = (tfreq / desiredfps) - (ttime - ltime);  
+		sleepy = (tfreq / targetfps) - (ttime - ltime);
 		sleepy *= 1000;
 		if(tfreq >= 65536)
 			sleepy /= afsfreq;
@@ -134,10 +155,10 @@ waiter:
 			SwitchToThread(); // limit to other threads on the same CPU core for other short waits
 		goto waiter;
 	}
-	if( (ttime-ltime) >= (tfreq*4/desiredfps))
+	if( (ttime-ltime) >= (tfreq*4/targetfps))
 		ltime=ttime;
 	else
-		ltime+=tfreq/desiredfps;
+		ltime+=tfreq/targetfps;
 }
 
 

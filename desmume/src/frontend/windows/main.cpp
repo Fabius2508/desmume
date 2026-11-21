@@ -1332,6 +1332,14 @@ static void StepRunLoop_Throttle(bool allowSleep = true, int forceFrameSkip = -1
 {
 	int skipRate = (forceFrameSkip < 0) ? frameskiprate : forceFrameSkip;
 	int ffSkipRate = (forceFrameSkip < 0) ? 9 : forceFrameSkip;
+	const int ffCapPercent = GetFastForwardCapPercent();
+	if(forceFrameSkip < 0 && ffCapPercent > 0)
+	{
+		// capped fast-forward: only skip as many frames as the speed-up needs,
+		// so e.g. 500% draws every 5th frame (smooth) instead of every 10th
+		ffSkipRate = ffCapPercent / 100 - 1;
+		if(ffSkipRate < 0) ffSkipRate = 0;
+	}
 
 	if(lastskiprate != skipRate)
 	{
@@ -1369,6 +1377,10 @@ static void StepRunLoop_Throttle(bool allowSleep = true, int forceFrameSkip = -1
 		}
 		if (mainLoopData.framestoskip < 1)
 			mainLoopData.framestoskip += ffSkipRate;
+
+		// capped fast-forward still goes through the speed limiter (at the capped speed)
+		if(ffCapPercent > 0 && FrameLimit && allowSleep)
+			SpeedThrottle();
 	}
 	else if((/*autoframeskipenab && frameskiprate ||*/ FrameLimit) && allowSleep)
 	{
@@ -2597,11 +2609,9 @@ int WINAPI WinMain (HINSTANCE hThisInstance,
 
 	GetINIPath();
 
-	#if !defined(PUBLIC_RELEASE) || defined(DEVELOPER)
-		static const bool defaultConsoleEnable = true;
-	#else
-		static const bool defaultConsoleEnable = false;
-	#endif
+	// custom patch: never open the console window unless the user turns it on
+	// (Tools > Console > Enabled, or [Console] Show=1 in desmume.ini)
+	static const bool defaultConsoleEnable = false;
 
 	gShowConsole = GetPrivateProfileBool("Console", "Show", defaultConsoleEnable, IniName);
 	gConsoleTopmost = GetPrivateProfileBool("Console", "Always On Top", false, IniName);
