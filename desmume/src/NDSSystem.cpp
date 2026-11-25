@@ -1941,42 +1941,111 @@ FORCEINLINE void arm7log()
 //   100  = stock speed
 //   200  = ARM9 runs twice as fast, 400 = four times, ... (clamped to 2000)
 //
-// The value is read once at startup from, in order:
-//   1. environment variable DESMUME_ARM9_OVERCLOCK
-//   2. first line of a text file "arm9_overclock.txt" in the working directory
-// Missing or invalid values mean 100 (stock).
+// Values above 400 stopped HeartGold from starting when applied from the very first
+// frame. So the overclock is NOT applied during the first ARM9_OVERCLOCK_BOOT_FRAMES
+// frames after a ROM is loaded or the emulator is reset (60 frames = about 1 second
+// of game time): the ARM9 runs at stock speed through the boot, then switches over.
+//
+// BUILT-IN DEFAULTS: change the two numbers below to change the behaviour without
+// any extra files.
+//
+// Optional overrides, read once when the first frame runs, in order:
+//   1. environment variables DESMUME_ARM9_OVERCLOCK and/or DESMUME_ARM9_BOOT_FRAMES
+//   2. text file "arm9_overclock.txt" in the same folder as the DeSmuME exe
+//      (works no matter how the ROM was started, e.g. by double-clicking it)
+//        line 1: overclock percent, e.g. 600
+//        line 2: (optional) number of boot frames at stock speed, e.g. 900
+//   3. the same text file in the current working directory
 // ---------------------------------------------------------------------------
+#define ARM9_OVERCLOCK_DEFAULT       400
+#define ARM9_OVERCLOCK_BOOT_FRAMES   900
+
 static bool gArm9OverclockLoaded = false;
-static s32 gArm9OverclockPercent = 100;
-static s32 gArm9OverclockCarry = 0; // fractional cycles carried between instructions
+static s32 gArm9OverclockTarget = ARM9_OVERCLOCK_DEFAULT;     // percent to use once booted
+static s32 gArm9OverclockBootFrames = ARM9_OVERCLOCK_BOOT_FRAMES;
+static s32 gArm9OverclockFrames = 0;     // frames since the last ROM load / reset
+static s32 gArm9OverclockPercent = 100;  // percent currently applied
+static s32 gArm9OverclockCarry = 0;      // fractional cycles carried between instructions
+
+static bool Arm9OverclockReadFile(const std::string &fileName, long &pct, long &bootFrames)
+{
+	FILE *f = fopen(fileName.c_str(), "r");
+	if (!f) return false;
+
+	// only accept lines that really start with a number; anything else keeps the default
+	char buf[32];
+	char *end;
+	if (fgets(buf, sizeof(buf), f))
+	{
+		const long v = strtol(buf, &end, 10);
+		if (end != buf) pct = v;
+	}
+	if (fgets(buf, sizeof(buf), f))
+	{
+		const long v = strtol(buf, &end, 10);
+		if (end != buf) bootFrames = v;
+	}
+	fclose(f);
+	return true;
+}
 
 static void LoadArm9Overclock()
 {
 	gArm9OverclockLoaded = true;
 
-	long pct = 100;
-	const char *env = getenv("DESMUME_ARM9_OVERCLOCK");
-	if (env && *env)
+	long pct = ARM9_OVERCLOCK_DEFAULT;
+	long boot = ARM9_OVERCLOCK_BOOT_FRAMES;
+
+	const char *envPct = getenv("DESMUME_ARM9_OVERCLOCK");
+	const char *envBoot = getenv("DESMUME_ARM9_BOOT_FRAMES");
+	if ((envPct && *envPct) || (envBoot && *envBoot))
 	{
-		pct = atol(env);
+		if (envPct && *envPct) pct = atol(envPct);
+		if (envBoot && *envBoot) boot = atol(envBoot);
 	}
 	else
 	{
-		FILE *f = fopen("arm9_overclock.txt", "r");
-		if (f)
-		{
-			char buf[32];
-			if (fgets(buf, sizeof(buf), f)) pct = atol(buf);
-			fclose(f);
-		}
+		std::string dir(path.pathToModule);
+		if (!dir.empty() && dir[dir.size() - 1] != DIRECTORY_DELIMITER_CHAR)
+			dir += DIRECTORY_DELIMITER_CHAR;
+
+		if (!Arm9OverclockReadFile(dir + "arm9_overclock.txt", pct, boot))
+			Arm9OverclockReadFile("arm9_overclock.txt", pct, boot);
 	}
 
-	if (pct <= 0) pct = 100;
+	if (pct <= 0) pct = ARM9_OVERCLOCK_DEFAULT;   // invalid value
 	if (pct > 2000) pct = 2000;
+	if (boot < 0) boot = ARM9_OVERCLOCK_BOOT_FRAMES;
+	if (boot > 100000) boot = 100000;
 
-	gArm9OverclockPercent = (s32)pct;
+	gArm9OverclockTarget = (s32)pct;
+	gArm9OverclockBootFrames = (s32)boot;
+	INFO("ARM9 overclock: %d%% after %d boot frames\n", (int)gArm9OverclockTarget, (int)gArm9OverclockBootFrames);
+}
+
+// Called when a ROM is loaded or the emulator is reset: back to stock speed for the boot.
+static void Arm9OverclockOnReset()
+{
+	gArm9OverclockFrames = 0;
+	gArm9OverclockPercent = 100;
 	gArm9OverclockCarry = 0;
-	INFO("ARM9 overclock: %d%%\n", (int)gArm9OverclockPercent);
+}
+
+// Called once at the start of every emulated frame.
+static void Arm9OverclockTick()
+{
+	if (!gArm9OverclockLoaded) LoadArm9Overclock();
+
+	if (gArm9OverclockFrames < gArm9OverclockBootFrames)
+		gArm9OverclockFrames++;
+
+	const s32 want = (gArm9OverclockFrames >= gArm9OverclockBootFrames) ? gArm9OverclockTarget : 100;
+	if (want != gArm9OverclockPercent)
+	{
+		gArm9OverclockPercent = want;
+		gArm9OverclockCarry = 0;
+		INFO("ARM9 overclock now %d%%\n", (int)gArm9OverclockPercent);
+	}
 }
 
 static FORCEINLINE s32 Arm9ScaleCycles(s32 cycles)
@@ -2169,7 +2238,7 @@ void NDS_exec(s32 nb)
 {
 	GDBSTUB_MUTEX_LOCK();
 
-	if (!gArm9OverclockLoaded) LoadArm9Overclock();
+	Arm9OverclockTick();
 
 	LagFrameFlag=1;
 
@@ -2768,6 +2837,8 @@ void NDS_Reset()
 	PrepareLogfiles();
 
 	CommonSettings.gamehacks.apply();
+
+	Arm9OverclockOnReset();
 
 	if(movieMode != MOVIEMODE_INACTIVE && !_HACK_DONT_STOPMOVIE)
 		movie_reset_command = true;
