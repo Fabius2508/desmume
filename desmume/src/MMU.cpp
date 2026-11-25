@@ -2356,6 +2356,10 @@ void DmaController::doCopy()
 
 	//printf("ARM%c dma of size %d from 0x%08X to 0x%08X took %d cycles\n",PROCNUM==0?'9':'7',todo*sz,saddr,daddr,time_elapsed);
 
+	//custom patch: optionally shorten the time charged for ARM9 DMA copies (see NDSSystem.cpp)
+	if(PROCNUM == ARMCPU_ARM9 && startmode != EDMAMode_Card)
+		time_elapsed = NDS_Arm9ScaleDmaTime(time_elapsed);
+
 	//reschedule an event for the end of this dma, and figure out how much it cost us
 	doSchedule();
 	nextEvent += time_elapsed;

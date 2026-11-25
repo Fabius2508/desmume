@@ -1935,7 +1935,7 @@ FORCEINLINE void arm7log()
 // ARM9 overclock (custom patch)
 //
 // Scales down the cycle cost charged for every ARM9 instruction, so the emulated
-// ARM9 gets more work done per unit of emulated time. The ARM7, timers, DMA, the
+// ARM9 gets more work done per unit of emulated time. The ARM7, timers, the
 // geometry engine and the video/audio hardware keep their normal timing.
 //
 //   100  = stock speed
@@ -1946,19 +1946,28 @@ FORCEINLINE void arm7log()
 // frames after a ROM is loaded or the emulator is reset (60 frames = about 1 second
 // of game time): the ARM9 runs at stock speed through the boot, then switches over.
 //
-// BUILT-IN DEFAULTS: change the two numbers below to change the behaviour without
+// ARM9 DMA SPEED (optional, off by default): the ARM9 bus is frozen while a DMA copy
+// runs, and the emulator charges time for every word copied. That time is not
+// affected by the CPU overclock, so lots of DMA can still stall the game. A DMA speed
+// above 100 shortens that charged time (200 = half as long). Card (cartridge) DMA and
+// all ARM7 DMA are left alone. Applied after the same boot frames as the overclock.
+//
+// BUILT-IN DEFAULTS: change the numbers below to change the behaviour without
 // any extra files.
 //
 // Optional overrides, read once when the first frame runs, in order:
-//   1. environment variables DESMUME_ARM9_OVERCLOCK and/or DESMUME_ARM9_BOOT_FRAMES
+//   1. environment variables DESMUME_ARM9_OVERCLOCK, DESMUME_ARM9_BOOT_FRAMES and/or
+//      DESMUME_ARM9_DMA_SPEED
 //   2. text file "arm9_overclock.txt" in the same folder as the DeSmuME exe
 //      (works no matter how the ROM was started, e.g. by double-clicking it)
-//        line 1: overclock percent, e.g. 600
+//        line 1: overclock percent, e.g. 800
 //        line 2: (optional) number of boot frames at stock speed, e.g. 900
+//        line 3: (optional) ARM9 DMA speed percent, e.g. 200 (100 = stock)
 //   3. the same text file in the current working directory
 // ---------------------------------------------------------------------------
 #define ARM9_OVERCLOCK_DEFAULT       400
 #define ARM9_OVERCLOCK_BOOT_FRAMES   900
+#define ARM9_DMA_SPEED_DEFAULT       100
 
 static bool gArm9OverclockLoaded = false;
 static s32 gArm9OverclockTarget = ARM9_OVERCLOCK_DEFAULT;     // percent to use once booted
@@ -1966,8 +1975,10 @@ static s32 gArm9OverclockBootFrames = ARM9_OVERCLOCK_BOOT_FRAMES;
 static s32 gArm9OverclockFrames = 0;     // frames since the last ROM load / reset
 static s32 gArm9OverclockPercent = 100;  // percent currently applied
 static s32 gArm9OverclockCarry = 0;      // fractional cycles carried between instructions
+static s32 gArm9DmaTarget = ARM9_DMA_SPEED_DEFAULT;           // DMA speed percent once booted
+static s32 gArm9DmaPercent = 100;        // DMA speed percent currently applied
 
-static bool Arm9OverclockReadFile(const std::string &fileName, long &pct, long &bootFrames)
+static bool Arm9OverclockReadFile(const std::string &fileName, long &pct, long &bootFrames, long &dmaPct)
 {
 	FILE *f = fopen(fileName.c_str(), "r");
 	if (!f) return false;
@@ -1985,6 +1996,11 @@ static bool Arm9OverclockReadFile(const std::string &fileName, long &pct, long &
 		const long v = strtol(buf, &end, 10);
 		if (end != buf) bootFrames = v;
 	}
+	if (fgets(buf, sizeof(buf), f))
+	{
+		const long v = strtol(buf, &end, 10);
+		if (end != buf) dmaPct = v;
+	}
 	fclose(f);
 	return true;
 }
@@ -1995,13 +2011,16 @@ static void LoadArm9Overclock()
 
 	long pct = ARM9_OVERCLOCK_DEFAULT;
 	long boot = ARM9_OVERCLOCK_BOOT_FRAMES;
+	long dma = ARM9_DMA_SPEED_DEFAULT;
 
 	const char *envPct = getenv("DESMUME_ARM9_OVERCLOCK");
 	const char *envBoot = getenv("DESMUME_ARM9_BOOT_FRAMES");
-	if ((envPct && *envPct) || (envBoot && *envBoot))
+	const char *envDma = getenv("DESMUME_ARM9_DMA_SPEED");
+	if ((envPct && *envPct) || (envBoot && *envBoot) || (envDma && *envDma))
 	{
 		if (envPct && *envPct) pct = atol(envPct);
 		if (envBoot && *envBoot) boot = atol(envBoot);
+		if (envDma && *envDma) dma = atol(envDma);
 	}
 	else
 	{
@@ -2009,18 +2028,22 @@ static void LoadArm9Overclock()
 		if (!dir.empty() && dir[dir.size() - 1] != DIRECTORY_DELIMITER_CHAR)
 			dir += DIRECTORY_DELIMITER_CHAR;
 
-		if (!Arm9OverclockReadFile(dir + "arm9_overclock.txt", pct, boot))
-			Arm9OverclockReadFile("arm9_overclock.txt", pct, boot);
+		if (!Arm9OverclockReadFile(dir + "arm9_overclock.txt", pct, boot, dma))
+			Arm9OverclockReadFile("arm9_overclock.txt", pct, boot, dma);
 	}
 
 	if (pct <= 0) pct = ARM9_OVERCLOCK_DEFAULT;   // invalid value
 	if (pct > 2000) pct = 2000;
 	if (boot < 0) boot = ARM9_OVERCLOCK_BOOT_FRAMES;
 	if (boot > 100000) boot = 100000;
+	if (dma <= 0) dma = ARM9_DMA_SPEED_DEFAULT;
+	if (dma > 2000) dma = 2000;
 
 	gArm9OverclockTarget = (s32)pct;
 	gArm9OverclockBootFrames = (s32)boot;
-	INFO("ARM9 overclock: %d%% after %d boot frames\n", (int)gArm9OverclockTarget, (int)gArm9OverclockBootFrames);
+	gArm9DmaTarget = (s32)dma;
+	INFO("ARM9 overclock: %d%%, DMA speed %d%%, after %d boot frames\n",
+		(int)gArm9OverclockTarget, (int)gArm9DmaTarget, (int)gArm9OverclockBootFrames);
 }
 
 // Called when a ROM is loaded or the emulator is reset: back to stock speed for the boot.
@@ -2029,6 +2052,7 @@ static void Arm9OverclockOnReset()
 	gArm9OverclockFrames = 0;
 	gArm9OverclockPercent = 100;
 	gArm9OverclockCarry = 0;
+	gArm9DmaPercent = 100;
 }
 
 // Called once at the start of every emulated frame.
@@ -2039,13 +2063,31 @@ static void Arm9OverclockTick()
 	if (gArm9OverclockFrames < gArm9OverclockBootFrames)
 		gArm9OverclockFrames++;
 
-	const s32 want = (gArm9OverclockFrames >= gArm9OverclockBootFrames) ? gArm9OverclockTarget : 100;
+	const bool booted = (gArm9OverclockFrames >= gArm9OverclockBootFrames);
+
+	const s32 want = booted ? gArm9OverclockTarget : 100;
 	if (want != gArm9OverclockPercent)
 	{
 		gArm9OverclockPercent = want;
 		gArm9OverclockCarry = 0;
 		INFO("ARM9 overclock now %d%%\n", (int)gArm9OverclockPercent);
 	}
+
+	const s32 wantDma = booted ? gArm9DmaTarget : 100;
+	if (wantDma != gArm9DmaPercent)
+	{
+		gArm9DmaPercent = wantDma;
+		INFO("ARM9 DMA speed now %d%%\n", (int)gArm9DmaPercent);
+	}
+}
+
+// Used by MMU.cpp: scales the time charged for an ARM9 DMA copy.
+s32 NDS_Arm9ScaleDmaTime(s32 cycles)
+{
+	if (gArm9DmaPercent == 100 || cycles <= 0) return cycles;
+
+	s32 scaled = (s32)(((s64)cycles * 100) / gArm9DmaPercent);
+	return (scaled < 1) ? 1 : scaled;
 }
 
 static FORCEINLINE s32 Arm9ScaleCycles(s32 cycles)

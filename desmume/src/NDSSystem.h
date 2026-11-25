@@ -451,6 +451,7 @@ void NDS_suspendProcessingInput(bool suspend);
 int NDS_LoadROM(const char *filename, const char* physicalFilename=0, const char* logicalFilename=0);
 void NDS_FreeROM(void);
 void NDS_Reset();
+s32 NDS_Arm9ScaleDmaTime(s32 cycles); // custom patch: ARM9 DMA time scaling, used by MMU.cpp
 
 bool NDS_LegitBoot();
 bool NDS_FakeBoot();
